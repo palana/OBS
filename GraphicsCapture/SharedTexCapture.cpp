@@ -22,11 +22,11 @@
 
 void SharedTexCapture::Destroy()
 {
-    delete sharedTexture;
-    sharedTexture = NULL;
-
-    delete copyTexture;
-    copyTexture = NULL;
+    for(UINT i=0; i<2; i++)
+    {
+        delete sharedTextures[i];
+        sharedTextures[i] = NULL;
+    }
 
     bInitialized = false;
 
@@ -65,14 +65,15 @@ bool SharedTexCapture::Init(CaptureInfo &info)
     texData = (SharedTexData*)sharedMemory;
     texData->frameTime = 1000000/API->GetMaxFPS()/2;
 
-    sharedTexture = GS->CreateTextureFromSharedHandle(info.cx, info.cy, (GSColorFormat)info.format, (HANDLE)texData->texHandle);
-    if(!sharedTexture)
+    for(UINT i=0; i<2; i++)
     {
-        AppWarning(TEXT("SharedTexCapture::Init: Could not create shared texture"));
-        return false;
+        sharedTextures[i] = GS->CreateTextureFromSharedHandle(info.cx, info.cy, (GSColorFormat)info.format, (HANDLE)texData->texHandles[i]);
+        if(!sharedTextures[i])
+        {
+            AppWarning(TEXT("SharedTexCapture::Init: Could not create shared texture"));
+            return false;
+        }
     }
-
-    copyTexture = GS->CreateTexture(info.cx, info.cy, (GSColorFormat)info.format, 0, FALSE, TRUE);
 
     Log(TEXT("SharedTexCapture hooked"));
 
@@ -82,10 +83,36 @@ bool SharedTexCapture::Init(CaptureInfo &info)
 
 Texture* SharedTexCapture::LockTexture()
 {
-    GS->CopyTexture(copyTexture, sharedTexture);
-    return copyTexture;
+   curTextureID = texData->lastRendered;
+
+    if(curTextureID < 2)
+    {
+        DWORD nextTexture = (curTextureID == 1) ? 0 : 1;
+        bool bSuccess = false;
+
+        if(sharedTextures[curTextureID]->AcquireSync(0, 0) == WAIT_OBJECT_0)
+            bSuccess = true;
+        else if(sharedTextures[nextTexture]->AcquireSync(0, 0) == WAIT_OBJECT_0)
+        {
+            bSuccess = true;
+            curTextureID = nextTexture;
+        }
+
+        if(bSuccess)
+        {
+            curTexture = sharedTextures[curTextureID];
+            return curTexture;
+        }
+    }
+
+    return NULL;
 }
 
 void SharedTexCapture::UnlockTexture()
 {
+    if(curTexture)
+    {
+        curTexture->ReleaseSync(0);
+        curTexture = NULL;
+    }
 }

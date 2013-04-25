@@ -36,7 +36,7 @@
 #define INFO_MEMORY             TEXT("Local\\OBSInfoMemory")
 #define TEXTURE_MEMORY          TEXT("Local\\OBSTextureMemory")
 
-#define OBS_KEEPALIVE_EVENT     TEXT("OBS_KeepAlive")
+#define OBS_KEEPALIVE_EVENT     TEXT("Local\\OBS_KeepAlive")
 
 #define CAPTURETYPE_MEMORY      1
 #define CAPTURETYPE_SHAREDTEX   2
@@ -61,8 +61,9 @@ struct MemoryCopyData
 
 struct SharedTexData
 {
+    UINT        lastRendered;
     LONGLONG    frameTime;
-    DWORD       texHandle;
+    DWORD       texHandles[2];
 };
 
 struct CaptureInfo

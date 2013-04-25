@@ -24,6 +24,8 @@
 #include "DXGIStuff.h"
 
 
+HookData                gi11swapResizeBuffers;
+HookData                gi11swapPresent;
 FARPROC                 oldD3D11Release = NULL;
 FARPROC                 newD3D11Release = NULL;
 
@@ -38,19 +40,30 @@ extern BOOL             bIsMultisampled;
 extern LONGLONG         lastTime;
 
 extern DXGI_FORMAT      dxgiFormat;
+ID3D10Device1           *shareDevice = NULL;
 ID3D11Resource          *copyTextureGame = NULL;
-HANDLE                  sharedHandle = NULL;
-
-
-extern bool bD3D101Hooked;
+ID3D10Resource          *copyTextureIntermediary = NULL;
+HANDLE                  sharedHandles[2] = {NULL, NULL};
+IDXGIKeyedMutex         *keyedMutexes[2] = {NULL, NULL};
+ID3D10Resource          *sharedTextures[2] = {NULL, NULL};
 
 void ClearD3D11Data()
 {
     bHasTextures = false;
+    if(texData)
+        texData->lastRendered = -1;
     texData = NULL;
-    sharedHandle = NULL;
+
+    for(UINT i=0; i<2; i++)
+    {
+        SafeRelease(keyedMutexes[i]);
+        SafeRelease(sharedTextures[i]);
+        sharedHandles[i] = NULL;
+    }
 
     SafeRelease(copyTextureGame);
+    SafeRelease(copyTextureIntermediary);
+    SafeRelease(shareDevice);
 
     DestroySharedMemory();
 }
@@ -89,6 +102,65 @@ bool DoD3D11Hook(ID3D11Device *device)
 {
     HRESULT hErr;
 
+    HMODULE hD3D10_1 = LoadLibrary(TEXT("d3d10_1.dll"));
+    if(!hD3D10_1)
+    {
+        RUNONCE logOutput << "DoD3D11Hook: could not load d3d10.1" << endl;
+        return false;
+    }
+
+    HMODULE hDXGI = GetModuleHandle(TEXT("dxgi.dll"));
+    if(!hDXGI)
+    {
+        RUNONCE logOutput << "DoD3D11Hook: could not load dxgi" << endl;
+        return false;
+    }
+
+    CREATEDXGIFACTORY1PROC createDXGIFactory1 = (CREATEDXGIFACTORY1PROC)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+    if(!createDXGIFactory1)
+    {
+        RUNONCE logOutput << "DoD3D11Hook: could not get address of CreateDXGIFactory1" << endl;
+        return false;
+    }
+
+    PFN_D3D10_CREATE_DEVICE1 d3d10CreateDevice1 = (PFN_D3D10_CREATE_DEVICE1)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
+    if(!d3d10CreateDevice1)
+    {
+        RUNONCE logOutput << "DoD3D11Hook: could not get address of D3D10CreateDevice1" << endl;
+        return false;
+    }
+
+    IDXGIFactory1 *factory;
+    if(FAILED(hErr = (*createDXGIFactory1)(__uuidof(IDXGIFactory1), (void**)&factory)))
+    {
+        RUNONCE logOutput << "DoD3D11Hook: CreateDXGIFactory1 failed, result = " << UINT(hErr) << endl;
+        return false;
+    }
+
+    IDXGIAdapter1 *adapter;
+    if(FAILED(hErr = factory->EnumAdapters1(0, &adapter)))
+    {
+        RUNONCE logOutput << "DoD3D11Hook: factory->EnumAdapters1 failed, result = " << UINT(hErr) << endl;
+        factory->Release();
+        return false;
+    }
+
+    if(FAILED(hErr = (*d3d10CreateDevice1)(adapter, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_FEATURE_LEVEL_10_1, D3D10_1_SDK_VERSION, &shareDevice)))
+    {
+        if(FAILED(hErr = (*d3d10CreateDevice1)(adapter, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_FEATURE_LEVEL_9_3, D3D10_1_SDK_VERSION, &shareDevice)))
+        {
+            RUNONCE logOutput << "DoD3D11Hook: device creation failed, result = " << UINT(hErr) << endl;
+            adapter->Release();
+            factory->Release();
+            return false;
+        }
+    }
+
+    adapter->Release();
+    factory->Release();
+
+    //------------------------------------------------
+
     D3D11_TEXTURE2D_DESC texGameDesc;
     ZeroMemory(&texGameDesc, sizeof(texGameDesc));
     texGameDesc.Width               = d3d11CaptureInfo.cx;
@@ -123,7 +195,8 @@ bool DoD3D11Hook(ID3D11Device *device)
         return false;
     }
 
-    if(FAILED(hErr = res->GetSharedHandle(&sharedHandle)))
+    HANDLE handle;
+    if(FAILED(hErr = res->GetSharedHandle(&handle)))
     {
         RUNONCE logOutput << "DoD3D11Hook: res->GetSharedHandle failed, result = " << UINT(hErr) << endl;
         d3d11Tex->Release();
@@ -133,6 +206,71 @@ bool DoD3D11Hook(ID3D11Device *device)
 
     d3d11Tex->Release();
     res->Release();
+
+    //------------------------------------------------
+
+    if(FAILED(hErr = shareDevice->OpenSharedResource(handle, __uuidof(ID3D10Resource), (void**)&copyTextureIntermediary)))
+    {
+        RUNONCE logOutput << "DoD3D11Hook: shareDevice->OpenSharedResource failed, result = " << UINT(hErr) << endl;
+        return false;
+    }
+
+    //------------------------------------------------
+
+    D3D10_TEXTURE2D_DESC texDesc;
+    ZeroMemory(&texDesc, sizeof(texDesc));
+    texDesc.Width               = d3d11CaptureInfo.cx;
+    texDesc.Height              = d3d11CaptureInfo.cy;
+    texDesc.MipLevels           = 1;
+    texDesc.ArraySize           = 1;
+    texDesc.Format              = dxgiFormat;
+    texDesc.SampleDesc.Count    = 1;
+    texDesc.BindFlags           = D3D10_BIND_RENDER_TARGET|D3D10_BIND_SHADER_RESOURCE;
+    texDesc.Usage               = D3D10_USAGE_DEFAULT;
+    texDesc.MiscFlags           = D3D10_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+
+    for(UINT i=0; i<2; i++)
+    {
+        ID3D10Texture2D *d3d10tex;
+        if(FAILED(hErr = shareDevice->CreateTexture2D(&texDesc, NULL, &d3d10tex)))
+        {
+            RUNONCE logOutput << "DoD3D11Hook: shareDevice->CreateTexture2D " << i << " failed, result = " << UINT(hErr) << endl;
+            return false;
+        }
+
+        if(FAILED(hErr = d3d10tex->QueryInterface(__uuidof(ID3D10Resource), (void**)&sharedTextures[i])))
+        {
+            RUNONCE logOutput << "DoD3D11Hook: d3d10tex->QueryInterface(ID3D10Resource) " << i << " failed, result = " << UINT(hErr) << endl;
+            d3d10tex->Release();
+            return false;
+        }
+
+        if(FAILED(hErr = d3d10tex->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&keyedMutexes[i])))
+        {
+            RUNONCE logOutput << "DoD3D11Hook: d3d10tex->QueryInterface(IDXGIKeyedMutex) " << i << " failed, result = " << UINT(hErr) << endl;
+            d3d10tex->Release();
+            return false;
+        }
+
+        IDXGIResource *res;
+        if(FAILED(hErr = d3d10tex->QueryInterface(__uuidof(IDXGIResource), (void**)&res)))
+        {
+            RUNONCE logOutput << "DoD3D11Hook: d3d10tex->QueryInterface(IDXGIResource) " << i << " failed, result = " << UINT(hErr) << endl;
+            d3d10tex->Release();
+            return false;
+        }
+
+        if(FAILED(hErr = res->GetSharedHandle(&sharedHandles[i])))
+        {
+            RUNONCE logOutput << "DoD3D11Hook: res->GetSharedHandle " << i << " failed, result = " << UINT(hErr) << endl;
+            res->Release();
+            d3d10tex->Release();
+            return false;
+        }
+
+        res->Release();
+        d3d10tex->Release();
+    }
 
     return true;
 }
@@ -218,7 +356,8 @@ void DoD3D11Capture(IDXGISwapChain *swap)
                     bHasTextures = true;
                     d3d11CaptureInfo.captureType = CAPTURETYPE_SHAREDTEX;
                     d3d11CaptureInfo.bFlip = FALSE;
-                    texData->texHandle = (DWORD)sharedHandle;
+                    texData->texHandles[0] = (DWORD)sharedHandles[0];
+                    texData->texHandles[1] = (DWORD)sharedHandles[1];
 
                     memcpy(infoMem, &d3d11CaptureInfo, sizeof(CaptureInfo));
                     SetEvent(hSignalReady);
@@ -237,7 +376,10 @@ void DoD3D11Capture(IDXGISwapChain *swap)
         //check keep alive state, dumb but effective
         if(bCapturing)
         {
-            if((timeVal-keepAliveTime) > 3000000)
+            if (!keepAliveTime)
+                keepAliveTime = timeVal;
+
+            if((timeVal-keepAliveTime) > 5000000)
             {
                 HANDLE hKeepAlive = OpenEvent(EVENT_ALL_ACCESS, FALSE, strKeepAlive.c_str());
                 if (hKeepAlive) {
@@ -289,6 +431,21 @@ void DoD3D11Capture(IDXGISwapChain *swap)
                                 else
                                     context->CopyResource(copyTextureGame, backBuffer);
 
+                                ID3D10Texture2D *outputTexture = NULL;
+                                int lastRendered = -1;
+
+                                if(keyedMutexes[curCapture]->AcquireSync(0, 0) == WAIT_OBJECT_0)
+                                    lastRendered = (int)curCapture;
+                                else if(keyedMutexes[nextCapture]->AcquireSync(0, 0) == WAIT_OBJECT_0)
+                                    lastRendered = (int)nextCapture;
+
+                                if(lastRendered != -1)
+                                {
+                                    shareDevice->CopyResource(sharedTextures[lastRendered], copyTextureIntermediary);
+                                    keyedMutexes[lastRendered]->ReleaseSync(0);
+                                }
+
+                                texData->lastRendered = lastRendered;
                                 backBuffer->Release();
                             }
 

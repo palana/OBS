@@ -48,6 +48,8 @@ void GetDisplayDevices(DeviceOutputs &deviceList)
                 if (adapterDesc.DedicatedVideoMemory != 0) {
                     DeviceOutputData &deviceData = *deviceList.devices.CreateNew();
                     deviceData.strDevice = adapterDesc.Description;
+                    if (i == 1)
+                        deviceData.strDevice << TEXT(" (Default)");
 
                     UINT j=0;
                     IDXGIOutput *giOutput;

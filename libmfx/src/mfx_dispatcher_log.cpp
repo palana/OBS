@@ -136,23 +136,32 @@ const char *DispatcherLog_GetMFXStatusString(int sts)
 
 void DispatcherLogBracketsHelper::Write(char * str, ...)
 {
+    DispatchLog* log = DispatchLog::get();
+    if(!log)
+        return;
     va_list argsptr;
     va_start(argsptr, str);
-    DispatchLog::get().Write(m_level, m_opcode, str, argsptr);
+    log->Write(m_level, m_opcode, str, argsptr);
     va_end(argsptr);
 }
 
 void DispatchLogBlockHelper::Write(char * str, ...)
 {
+    DispatchLog* log = DispatchLog::get();
+    if(!log)
+        return;
     va_list argsptr;
     va_start(argsptr, str);
-    DispatchLog::get().Write(m_level, DL_EVENT_START, str, argsptr);
+    log->Write(m_level, DL_EVENT_START, str, argsptr);
     va_end(argsptr);
 }
 
 DispatchLogBlockHelper::~DispatchLogBlockHelper()
 {
-    DispatchLog::get().Write(m_level, DL_EVENT_STOP, NULL, NULL);
+    DispatchLog* log = DispatchLog::get();
+    if(!log)
+        return;
+    log->Write(m_level, DL_EVENT_STOP, NULL, NULL);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -415,7 +424,7 @@ class SinkRegistrator<FileSink>
 public:
     SinkRegistrator()
     {
-        DispatchLog::get().AttachSink( DL_SINK_IMsgHandler, &FileSink::get(DISPACTHER_LOG_FW_PATH));
+        DispatchLog::get()->AttachSink( DL_SINK_IMsgHandler, &FileSink::get(DISPACTHER_LOG_FW_PATH));
     }
 };
 
@@ -428,6 +437,21 @@ void FileSink::Write(int level, int /*opcode*/, char * msg, va_list argptr)
     }
 }
 
+namespace {
+    FileSink *file;
+}
+
+void mfxFileLog(const char* path)
+{
+    DispatchLog::get(true).AttachSink(DL_SINK_IMsgHandler, file = new FileSink(path));
+}
+
+void mfxStopLog()
+{
+    DispatchLog::get(true).DetachAllSinks();
+    DispatchLog::reset();
+    delete file;
+}
 
 //////////////////////////////////////////////////////////////////////////
 //singletons initialization section

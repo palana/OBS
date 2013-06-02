@@ -131,6 +131,8 @@ struct VideoPacket
     inline void FreeData() {Packet.Clear();}
 };
 
+void mfxFileLog(const char* path);
+void mfxStopLog();
 
 class QSVEncoder : public VideoEncoder
 {
@@ -244,6 +246,9 @@ public:
         : enc(nullptr)
     {
         Log(TEXT("------------------------------------------"));
+        LPSTR s = (String(OBSGetAppDataPath()) + "\\logs\\mfx.log").CreateUTF8String();
+        mfxFileLog(s);
+        Free(s);
         for(int i = 0; i < sizeof(validImpl)/sizeof(validImpl[0]); i++)
         {
             mfxIMPL impl = validImpl[i];
@@ -263,6 +268,7 @@ public:
             if(result == MFX_ERR_NONE)
                 break;
         }
+        mfxStopLog();
 
         session.SetPriority(MFX_PRIORITY_HIGH);
 

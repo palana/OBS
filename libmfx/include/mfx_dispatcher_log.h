@@ -140,7 +140,7 @@ public:
         return *pstored;    
     }
 
-    inline static T & get()
+    inline static T & get(bool bdummy)
     {
         T * pstored;
         if (NULL == (pstored = store_or_load()))
@@ -149,13 +149,23 @@ public:
         }
         return *pstored;
     }
+
+    inline static T* get()
+    {
+        return store_or_load();
+    }
+
+    inline static void reset()
+    {
+        store_or_load(nullptr, true);
+    }
 private:
     //if obj == NULL, then it load 
     //if obj != NULL then it store obj
-    inline static T * store_or_load(T * obj = NULL)
+    inline static T * store_or_load(T * obj = NULL, bool force=false)
     {
         static std::auto_ptr<T> instance;
-        if (NULL != obj)
+        if (NULL != obj || force)
         {
             instance.reset(obj);
         }
@@ -239,7 +249,7 @@ public:
         if (NULL != m_hdl)
             fclose(m_hdl);
     }
-private:
+
     FILE * m_hdl;
     FileSink(const std::string & log_file)
     {

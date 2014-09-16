@@ -66,6 +66,8 @@ struct ReplayBuffer : VideoFileStream
         for (auto &thread : threads)
             if (WaitForSingleObject(thread.second.get(), seconds * 100) != WAIT_OBJECT_0)
                 OSTerminateThread(thread.first.release(), 0);
+            else
+                App->AddPendingStreamThread(thread.first.release());
     }
     
     virtual void AddPacket(const BYTE *data, UINT size, DWORD timestamp, DWORD pts, PacketType type) override
